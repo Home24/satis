@@ -47,6 +47,8 @@ class BuildCommand extends BaseCommand
                 new InputOption('repository-url', null, InputOption::VALUE_OPTIONAL, 'Only update the repository at given url', null),
                 new InputOption('no-html-output', null, InputOption::VALUE_NONE, 'Turn off HTML view'),
                 new InputOption('skip-errors', null, InputOption::VALUE_NONE, 'Skip Download or Archive errors'),
+                new InputOption('build-from', null, InputOption::VALUE_OPTIONAL, 'Use provided serialized packages to build final view'),
+                new InputOption('dump-packages', null, InputOption::VALUE_NONE, 'Dump packages to use them for final view'),
                 new InputOption('stats', null, InputOption::VALUE_NONE, 'Display the download progress bar'),
             ))
             ->setHelp(<<<EOT
@@ -112,6 +114,8 @@ EOT
         $packagesFilter = $input->getArgument('packages');
         $repositoryUrl = $input->getOption('repository-url');
         $skipErrors = (bool) $input->getOption('skip-errors');
+        $buildFrom = $input->getOption('build-from');
+        $dumpPackages = (bool) $input->getOption('dump-packages');
 
         // load auth.json authentication information and pass it to the io interface
         $io = $this->getIO();
@@ -171,31 +175,45 @@ EOT
         /** @var $application Application */
         $application = $this->getApplication();
         $composer = $application->getComposer(true, $config);
-        $packageSelection = new PackageSelection($output, $outputDir, $config, $skipErrors);
 
-        if ($repositoryUrl !== null) {
-            $packageSelection->setRepositoryFilter($repositoryUrl);
+        if ($buildFrom === null) {
+
+            $packageSelection = new PackageSelection($output, $outputDir, $config, $skipErrors);
+
+            if ($repositoryUrl !== null) {
+                $packageSelection->setRepositoryFilter($repositoryUrl);
+            } else {
+                $packageSelection->setPackagesFilter($packagesFilter);
+            }
+
+            $packages = $packageSelection->select($composer, $verbose);
+
+            if (isset($config['archive']['directory'])) {
+                $downloads = new ArchiveBuilder($output, $outputDir, $config, $skipErrors);
+                $downloads->setComposer($composer);
+                $downloads->setInput($input);
+                $downloads->dump($packages);
+            }
+
+            if ($packageSelection->hasFilterForPackages() || $packageSelection->hasRepositoryFilter()) {
+                // in case of an active filter we need to load the dumped packages.json and merge the
+                // updated packages in
+                $oldPackages = $packageSelection->load();
+                $packages += $oldPackages;
+                ksort($packages);
+            }
+
+            if ($dumpPackages) {
+                file_put_contents($outputDir.'/packages.dump.serialized', serialize($packages));
+            }
         } else {
-            $packageSelection->setPackagesFilter($packagesFilter);
+            $packagesPaths = explode(',', $buildFrom);
+            $packages = [];
+            foreach($packagesPaths as $path) {
+                $packages = $packages + unserialize(file_get_contents($path.'/packages.dump.serialized'));
+            }
+
         }
-
-        $packages = $packageSelection->select($composer, $verbose);
-
-        if (isset($config['archive']['directory'])) {
-            $downloads = new ArchiveBuilder($output, $outputDir, $config, $skipErrors);
-            $downloads->setComposer($composer);
-            $downloads->setInput($input);
-            $downloads->dump($packages);
-        }
-
-        if ($packageSelection->hasFilterForPackages() || $packageSelection->hasRepositoryFilter()) {
-            // in case of an active filter we need to load the dumped packages.json and merge the
-            // updated packages in
-            $oldPackages = $packageSelection->load();
-            $packages += $oldPackages;
-            ksort($packages);
-        }
-
         $packagesBuilder = new PackagesBuilder($output, $outputDir, $config, $skipErrors);
         $packagesBuilder->dump($packages);
 
